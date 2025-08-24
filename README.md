@@ -13,7 +13,7 @@ This script was written for one specific purpose: to bypass main AUR repo downti
 > The script depends on git and base-devel, ensure those packages are installed before proceeding.
 
 To install type in the terminal:
-`sudo curl -fsSL https://raw.githubusercontent.com/tieler-am-elster/aurify/main/aurify -o /usr/bin/aurify && sudo chmod +x /usr/bin/aurify`
+`sudo curl -fsSL https://raw.githubusercontent.com/tieler-am-elster/Aurify/refs/heads/master/aurify -o /usr/bin/aurify && sudo chmod +x /usr/bin/aurify`
 
 ## Usage
 To install/update a package:
