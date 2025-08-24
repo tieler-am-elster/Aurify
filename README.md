@@ -3,10 +3,10 @@ Aurify is a minimal **AUR helper** written in Bash designed for bypassing the ma
 This script was written for one specific purpose: to bypass main AUR repo downtime while maintaining simplicity and ease of use.
 
 ## Features
-- Install AUR packages directly from the GitHub mirror
+- Installing AUR packages directly from the GitHub mirror
 - Automatic dependency resolution (AUR + official repos)
 - Colored output for readability and accessibility
-- Build in a safe, temporary directory (no clutter)
+- Building in a safe, temporary directory (no clutter)
 
 ## Installation
 > [!WARNING]
