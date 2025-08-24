@@ -1,0 +1,107 @@
+#!/bin/bash
+
+# --------------------------------
+# aurifyr - lightweight AUR helper
+# --------------------------------
+
+# Colors
+RED="\e[31m"
+GREEN="\e[32m"
+YELLOW="\e[33m"
+BLUE="\e[34m"
+RESET="\e[0m"
+info()    { echo -e "${BLUE}$1${RESET}"; }
+success() { echo -e "${GREEN}$1${RESET}"; }
+warn()    { echo -e "${YELLOW}$1${RESET}"; }
+error()   { echo -e "${RED}$1${RESET}"; }
+
+if [ -z "$1" ]; then
+    echo "Usage: aurifyr <aur-package-name>"
+    exit 1
+fi
+
+PKG="$1"
+
+TMPDIR="${HOME}/.aurify_build"
+mkdir -p "$TMPDIR"
+BUILD_DIR="$TMPDIR/$PKG"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+
+sanitize_dep() {
+    echo "$1" | sed 's/[<>=].*//'
+}
+
+install_dep() {
+    local dep="$1"
+    dep_name=$(sanitize_dep "$dep")
+
+    if pacman -Q "$dep_name" &>/dev/null; then
+        return
+    fi
+
+    if pacman -Ss "^$dep_name$" | grep -q "$dep_name"; then
+        info "> Installing official dependency: $dep_name"
+        sudo pacman -S --needed --noconfirm "$dep_name"
+    else
+        info "> Building AUR dependency: $dep_name"
+        aurifyr "$dep_name"
+    fi
+}
+
+info "> Cloning $PKG..."
+if ! git clone --branch "$PKG" --single-branch https://github.com/archlinux/aur.git "$BUILD_DIR" 2>/dev/null; then
+    error "Package $PKG not found on GitHub mirror"
+    rm -rf "$BUILD_DIR"
+    exit 1
+fi
+
+cd "$BUILD_DIR" || exit 1
+
+if [ ! -f PKGBUILD ]; then
+    error "PKGBUILD missing in $PKG"
+    rm -rf "$BUILD_DIR"
+    exit 1
+fi
+source PKGBUILD
+
+for dep in "${makedepends[@]}"; do
+    install_dep "$dep"
+done
+
+for dep in "${depends[@]}"; do
+    install_dep "$dep"
+done
+
+info "> Building package $PKG..."
+if ! makepkg -f --noconfirm; then
+    error "Failed to build $PKG"
+    rm -rf "$BUILD_DIR"
+    exit 1
+fi
+
+PKGFILE=$(ls *.pkg.tar.zst 2>/dev/null | head -n 1)
+if [ -z "$PKGFILE" ]; then
+    error "No package file produced for $PKG"
+    rm -rf "$BUILD_DIR"
+    exit 1
+fi
+
+info "> Installing $PKG..."
+sudo pacman -U --noconfirm "$PKGFILE" || { error "Installation failed"; rm -rf "$BUILD_DIR"; exit 1; }
+
+rm -rf "$BUILD_DIR"
+info "> Removing build dependencies..."
+for dep in "${makedepends[@]}"; do
+    dep_name=$(sanitize_dep "$dep")
+    if pacman -Q base-devel &>/dev/null && pacman -Qi "$dep_name" | grep -q "Group.*base-devel"; then
+        continue
+    fi
+
+    if pacman -Q "$dep_name" &>/dev/null && pacman -Ss "^$dep_name$" | grep -q "$dep_name"; then
+        sudo pacman -Rns --noconfirm "$dep_name"
+    fi
+done
+
+success "$PKG installed successfully!"
+exit 0
