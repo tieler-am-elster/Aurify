@@ -1,10 +1,9 @@
 #!/bin/bash
-
 # --------------------------------
-# aurifyr - lightweight AUR helper
+# aurify - lightweight AUR helper
 # --------------------------------
 
-# Colors
+# Color init
 RED="\e[31m"
 GREEN="\e[32m"
 YELLOW="\e[33m"
@@ -15,18 +14,39 @@ success() { echo -e "${GREEN}$1${RESET}"; }
 warn()    { echo -e "${YELLOW}$1${RESET}"; }
 error()   { echo -e "${RED}$1${RESET}"; }
 
-if [ -z "$1" ]; then
-    echo "Usage: aurifyr <aur-package-name>"
+# Confirm func
+confirm() {
+    local prompt="$1 [Y/n]: "
+    read -rp "$prompt" response
+    case "$response" in
+        [nN][oO]|[nN]) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# Defaults
+AUTO_CONFIRM=false
+PACKAGES=()
+
+# Argparser
+for arg in "$@"; do
+    case "$arg" in
+        -n|--noconfirm)
+            AUTO_CONFIRM=true
+            ;;
+        *)
+            PACKAGES+=("$arg")
+            ;;
+    esac
+done
+
+if [ ${#PACKAGES[@]} -eq 0 ]; then
+    echo "Usage: aurify (args) <package-name> [package-name...]"
     exit 1
 fi
 
-PKG="$1"
-
 TMPDIR="${HOME}/.aurify_build"
 mkdir -p "$TMPDIR"
-BUILD_DIR="$TMPDIR/$PKG"
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
 
 sanitize_dep() {
     echo "$1" | sed 's/[<>=].*//'
@@ -34,74 +54,96 @@ sanitize_dep() {
 
 install_dep() {
     local dep="$1"
+    local dep_name
     dep_name=$(sanitize_dep "$dep")
 
     if pacman -Q "$dep_name" &>/dev/null; then
         return
     fi
 
-    if pacman -Ss "^$dep_name$" | grep -q "$dep_name"; then
+    if pacman -Si "$dep_name" &>/dev/null; then
         info "> Installing official dependency: $dep_name"
         sudo pacman -S --needed --noconfirm "$dep_name"
     else
         info "> Building AUR dependency: $dep_name"
-        aurifyr "$dep_name"
+        build_pkg "$dep_name"
     fi
 }
 
-info "> Cloning $PKG..."
-if ! git clone --branch "$PKG" --single-branch https://github.com/archlinux/aur.git "$BUILD_DIR" 2>/dev/null; then
-    error "Package $PKG not found on GitHub mirror"
-    rm -rf "$BUILD_DIR"
-    exit 1
-fi
+build_pkg() {
+    local PKG="$1"
+    local UNIQUE_DIR="${TMPDIR}/${PKG}"
+    mkdir -p "$UNIQUE_DIR"
 
-cd "$BUILD_DIR" || exit 1
-
-if [ ! -f PKGBUILD ]; then
-    error "PKGBUILD missing in $PKG"
-    rm -rf "$BUILD_DIR"
-    exit 1
-fi
-source PKGBUILD
-
-for dep in "${makedepends[@]}"; do
-    install_dep "$dep"
-done
-
-for dep in "${depends[@]}"; do
-    install_dep "$dep"
-done
-
-info "> Building package $PKG..."
-if ! makepkg -f --noconfirm; then
-    error "Failed to build $PKG"
-    rm -rf "$BUILD_DIR"
-    exit 1
-fi
-
-PKGFILE=$(ls *.pkg.tar.zst 2>/dev/null | head -n 1)
-if [ -z "$PKGFILE" ]; then
-    error "No package file produced for $PKG"
-    rm -rf "$BUILD_DIR"
-    exit 1
-fi
-
-info "> Installing $PKG..."
-sudo pacman -U --noconfirm "$PKGFILE" || { error "Installation failed"; rm -rf "$BUILD_DIR"; exit 1; }
-
-rm -rf "$BUILD_DIR"
-info "> Removing build dependencies..."
-for dep in "${makedepends[@]}"; do
-    dep_name=$(sanitize_dep "$dep")
-    if pacman -Q base-devel &>/dev/null && pacman -Qi "$dep_name" | grep -q "Group.*base-devel"; then
-        continue
+    info "> Cloning $PKG..."
+    if ! git clone --branch "$PKG" --single-branch https://github.com/archlinux/aur.git "$UNIQUE_DIR" 2>/dev/null; then
+        error "Package $PKG not found/unavailable"
+        rm -rf "$UNIQUE_DIR"
+        return 1
     fi
 
-    if pacman -Q "$dep_name" &>/dev/null && pacman -Ss "^$dep_name$" | grep -q "$dep_name"; then
-        sudo pacman -Rns --noconfirm "$dep_name"
+    cd "$UNIQUE_DIR" || return 1
+    if [ ! -f PKGBUILD ]; then
+        error "PKGBUILD missing in $PKG"
+        rm -rf "$UNIQUE_DIR"
+        return 1
     fi
-done
 
-success "$PKG installed successfully!"
-exit 0
+    if ! $AUTO_CONFIRM; then
+        if confirm "Show PKGBUILD for $PKG?"; then
+            less PKGBUILD
+            if ! confirm "Proceed with building $PKG?"; then
+                warn "> Skipping $PKG"
+                rm -rf "$UNIQUE_DIR"
+                return 0
+            fi
+        fi
+    fi
+
+    source PKGBUILD
+
+    for dep in "${makedepends[@]}"; do
+        install_dep "$dep"
+    done
+    for dep in "${depends[@]}"; do
+        install_dep "$dep"
+    done
+
+    info "> Building package $PKG..."
+    if ! makepkg -f --noconfirm; then
+        error "Failed to build $PKG"
+        rm -rf "$UNIQUE_DIR"
+        return 1
+    fi
+
+    local PKGFILE
+    PKGFILE=$(ls *.pkg.tar.zst 2>/dev/null | head -n 1)
+    if [ -z "$PKGFILE" ]; then
+        error "No package file produced for $PKG"
+        rm -rf "$UNIQUE_DIR"
+        return 1
+    fi
+
+    info "> Installing $PKG..."
+    sudo pacman -U --noconfirm "$PKGFILE" || { error "Installation failed"; rm -rf "$UNIQUE_DIR"; return 1; }
+
+    rm -rf "$UNIQUE_DIR"
+
+    info "> Removing build dependencies..."
+    for dep in "${makedepends[@]}"; do
+        dep_name=$(sanitize_dep "$dep")
+        if pacman -Q base-devel &>/dev/null && pacman -Qi "$dep_name" | grep -q "Group.*base-devel"; then
+            continue
+        fi
+        if pacman -Q "$dep_name" &>/dev/null && pacman -Si "$dep_name" &>/dev/null; then
+            sudo pacman -Rns --noconfirm "$dep_name"
+        fi
+    done
+
+    success "$PKG installed successfully!"
+}
+
+# Main loop
+for pkg in "${PACKAGES[@]}"; do
+    build_pkg "$pkg"
+done
